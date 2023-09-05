@@ -28,6 +28,7 @@ import certifi
 
 # pylint: disable=E0401
 import websockets
+from tenacity import retry, wait_exponential
 
 logging.basicConfig(
     format="%(asctime)-15s %(levelname)s :: %(filename)s:%(lineno)s:%(funcName)s() :: %(message)s",
@@ -77,7 +78,7 @@ def determine_deviation(values: list[float]) -> float:
     return percentage
 
 
-# @retry(wait=wait_exponential(multiplier=1, min=4, max=30), after=_retry_logging)
+@retry(wait=wait_exponential(multiplier=1, min=4, max=30), after=_retry_logging)
 async def connect_to_websocket(msg_to_send: str, local: bool):
     """Connect to the websocket and parse the response."""
     validator_connection = f"{VALIDATOR_URI}"
@@ -93,23 +94,37 @@ async def connect_to_websocket(msg_to_send: str, local: bool):
         ) as websocket:
             logger.info("connected to websocket")
             await websocket.send(msg_to_send)
+            logger.info(msg_to_send)
             msg = await websocket.recv()
-            data = json.loads(msg)
-            return data
+            return json.loads(msg)
     except websockets.exceptions.InvalidURI as err:
         logger.error(
             "ensure 'ORCFAX_VALIDATOR' environment variable is set: %s (`export ORCFAX_VALIDATOR=wss://`)",
             err,
         )
+        sys.exit(1)
     except websockets.exceptions.ConnectionClosedError as err:
         logger.warning("closed connection error, attempting exponential retry: %s", err)
-        raise websockets.exceptions.ConnectionClosedError from err
-    return None
+        raise err
+    except json.decoder.JSONDecodeError as err:
+        logger.error("error decoding server response: %s", err)
+    return {}
 
 
 async def price_monitor(local: bool = False):
     """Passively wait for the datum to broadcast and then publish via
     COOP.
+
+    Example response:
+
+    ```json
+        {
+            "error": null,
+            "data": [{
+                "ADA-USD": [0.256395, 0.256463]
+            }]
+        }
+    ```
     """
     msg_to_send = price_request_msg()
     try:
@@ -117,10 +132,13 @@ async def price_monitor(local: bool = False):
             logger.info("request for prices: %s", msg_to_send)
             data = await connect_to_websocket(msg_to_send, local)
             values = []
-            for value in data:
-                values = value.get(FEED_ID)
-                if not values:
-                    break
+            if data.get("error"):
+                logger.error("error in websocket response: %s", data.get("error"))
+                time.sleep(POLLING_TIME)
+                continue
+            data = data.get("data", [])
+            for item in data:
+                values = item.get(FEED_ID, [])
             logger.info("received: %s", values)
             deviation = determine_deviation(values)
             logger.info("deviation (%%) calculated as: %s", deviation)
