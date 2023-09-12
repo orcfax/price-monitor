@@ -173,7 +173,8 @@ async def price_monitor(local: bool = False):
             logger.info("deviation (%%) calculated as: %s", deviation)
             if deviation >= 1.0:
                 logger.info(
-                    "deviation '%s' greater than 1%% requesting new price on-chain",
+                    "deviation: %s '%s' greater than 1%% requesting new price on-chain",
+                    values,
                     deviation,
                 )
                 await request_new_price(local)
