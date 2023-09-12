@@ -43,8 +43,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# NB. this all needs re-writing. We need a better way of providing these
+# arguments for multi-feed monitoring.
+ADA_USD_VALIDATION = "ADAUSD-ee4eed14-ffc2-11ed-9f67-67fb68ae3988"
 VALIDATOR_URI: Final[str] = os.environ.get("ORCFAX_VALIDATOR")
+MONITOR_URI: Final[str] = f"{VALIDATOR_URI}price_monitor/"
+VALIDATION_REQUEST_URI: Final[str] = f"{VALIDATOR_URI}validate/{ADA_USD_VALIDATION}/"
 FEED_ID: Final[str] = "ADA-USD"
+
+# Seconds after which to request current price off-chain.
 POLLING_TIME: Final[str] = 60
 
 
@@ -62,7 +69,7 @@ def _retry_logging(retry_state):
     """Provide some logging about tenacity retry attempts."""
     logger.info(
         "attempting connection to validator websocket '%s' (tries: %s)",
-        f"{VALIDATOR_URI}",
+        f"{MONITOR_URI}",
         retry_state.attempt_number,
     )
 
@@ -79,9 +86,9 @@ def determine_deviation(values: list[float]) -> float:
 
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=30), after=_retry_logging)
-async def connect_to_websocket(msg_to_send: str, local: bool):
+async def connect_to_websocket(ws_uri: str, msg_to_send: str, local: bool):
     """Connect to the websocket and parse the response."""
-    validator_connection = f"{VALIDATOR_URI}"
+    validator_connection = ws_uri
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     if local:
         ssl_context = None
@@ -103,12 +110,33 @@ async def connect_to_websocket(msg_to_send: str, local: bool):
             err,
         )
         sys.exit(1)
-    except websockets.exceptions.ConnectionClosedError as err:
-        logger.warning("closed connection error, attempting exponential retry: %s", err)
-        raise err
+    except (
+        websockets.exceptions.ConnectionClosedError,
+        websockets.exceptions.InvalidStatusCode,
+    ) as err:
+        logger.warning(
+            "closed connection error '%s', attempting exponential retry: %s",
+            ws_uri,
+            err,
+        )
+        if ws_uri == MONITOR_URI:
+            # Only raise an exception if the problem exists with the
+            # monitor function.
+            raise err
     except json.decoder.JSONDecodeError as err:
-        logger.error("error decoding server response: %s", err)
+        logger.error("json error decoding server response '%s': %s", msg, err)
+    except websockets.exceptions.ConnectionClosedOK as err:
+        logger.error("connection to: '%s' made: %s", ws_uri, err)
     return {}
+
+
+async def request_new_price(local: bool):
+    """Send a validation request to the server to ask for a new price
+    to be placed on-chain.
+    """
+    validate_uri = VALIDATION_REQUEST_URI
+    await connect_to_websocket(validate_uri, "", local)
+    return
 
 
 async def price_monitor(local: bool = False):
@@ -126,11 +154,12 @@ async def price_monitor(local: bool = False):
         }
     ```
     """
+    monitor_uri = MONITOR_URI
     msg_to_send = price_request_msg()
     try:
         while True:
             logger.info("request for prices: %s", msg_to_send)
-            data = await connect_to_websocket(msg_to_send, local)
+            data = await connect_to_websocket(monitor_uri, msg_to_send, local)
             values = []
             if data.get("error"):
                 logger.error("error in websocket response: %s", data.get("error"))
@@ -143,7 +172,12 @@ async def price_monitor(local: bool = False):
             deviation = determine_deviation(values)
             logger.info("deviation (%%) calculated as: %s", deviation)
             if deviation >= 1.0:
-                logger.info("deviation greater than 1%% requesting new price on-chain")
+                logger.info(
+                    "deviation '%s' greater than 1%% requesting new price on-chain",
+                    deviation,
+                )
+                await request_new_price(local)
+            logger.info("polling: %ss", POLLING_TIME)
             time.sleep(POLLING_TIME)
     except KeyboardInterrupt:
         print("", file=sys.stderr)
