@@ -2,7 +2,7 @@
 -r requirements.txt
 
 pip-upgrader==1.4.15
-pre-commit==3.3.2
-pylint==2.17.4
-pytest==7.3.1
-tox==4.5.2
+pre-commit==3.8.0
+pylint==3.2.6
+pytest==8.3.2
+tox==4.16.0

@@ -1,4 +1,4 @@
 # requirements for the production project.
-certifi==2023.7.22
-tenacity==8.2.3
-websockets==11.0.3
+certifi==2024.7.4
+tenacity==9.0.0
+websockets==12.0
