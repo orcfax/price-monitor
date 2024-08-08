@@ -33,3 +33,5 @@ ignore-paths=
 disable =
     C0301, 	# line-length too long, see Black documented recommendations.
     C0115,  # No docstring for Class.
+    # Pylint incorrectly picking up the below.
+    R0401,  # Cyclic import.

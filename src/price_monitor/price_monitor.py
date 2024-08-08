@@ -30,6 +30,15 @@ import certifi
 import websockets
 from tenacity import retry, wait_exponential
 
+try:
+    import feed_helper
+except ModuleNotFoundError:
+    try:
+        from src.price_monitor import feed_helper
+    except ModuleNotFoundError:
+        from price_monitor import feed_helper
+
+
 logging.basicConfig(
     format="%(asctime)-15s %(levelname)s :: %(filename)s:%(lineno)s:%(funcName)s() :: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -48,16 +57,15 @@ logger = logging.getLogger(__name__)
 ADA_USD_VALIDATION = "ADAUSD-ee4eed14-ffc2-11ed-9f67-67fb68ae3988"
 VALIDATOR_URI: Final[str] = os.environ.get("ORCFAX_VALIDATOR")
 MONITOR_URI: Final[str] = f"{VALIDATOR_URI}price_monitor/"
-VALIDATION_REQUEST_URI: Final[str] = f"{VALIDATOR_URI}validate/{ADA_USD_VALIDATION}/"
-FEED_ID: Final[str] = "ADA-USD"
+VALIDATION_REQUEST_URI: Final[str] = f"{VALIDATOR_URI}validate_on_demand/"
 
 # Seconds after which to request current price off-chain.
 POLLING_TIME: Final[str] = 60
 
 
-def price_request_msg() -> str:
+async def parse_feed_data(feed_data: str) -> str:
     """Return a price request message to send to the websocket."""
-    return json.dumps({"feed_ids": [FEED_ID]})
+    return await feed_helper.read_feed_data(feed_data=feed_data)
 
 
 def get_user_agent() -> str:
@@ -103,13 +111,19 @@ async def connect_to_websocket(ws_uri: str, msg_to_send: str, local: bool):
             await websocket.send(msg_to_send)
             logger.info(msg_to_send)
             msg = await websocket.recv()
-            return json.loads(msg)
+            try:
+                return json.loads(msg)
+            except json.JSONDecodeError:
+                pass
+            return msg
     except websockets.exceptions.InvalidURI as err:
         logger.error(
             "ensure 'ORCFAX_VALIDATOR' environment variable is set: %s (`export ORCFAX_VALIDATOR=wss://`)",
             err,
         )
         sys.exit(1)
+    except TypeError as err:
+        logger.error("ensure data is sent as JSON: %s", err)
     except (
         websockets.exceptions.ConnectionClosedError,
         websockets.exceptions.InvalidStatusCode,
@@ -130,16 +144,16 @@ async def connect_to_websocket(ws_uri: str, msg_to_send: str, local: bool):
     return {}
 
 
-async def request_new_price(local: bool):
+async def request_new_prices(pairs_to_request: dict, local: bool):
     """Send a validation request to the server to ask for a new price
     to be placed on-chain.
     """
-    validate_uri = VALIDATION_REQUEST_URI
-    await connect_to_websocket(validate_uri, "", local)
+    validate_uri = f"{VALIDATION_REQUEST_URI}"
+    await connect_to_websocket(validate_uri, pairs_to_request, local)
     return
 
 
-async def price_monitor(local: bool = False):
+async def price_monitor(feed_data: str, local: bool = False):
     """Passively wait for the datum to broadcast and then publish via
     COOP.
 
@@ -155,30 +169,50 @@ async def price_monitor(local: bool = False):
     ```
     """
     monitor_uri = MONITOR_URI
-    msg_to_send = price_request_msg()
+    feeds = await parse_feed_data(feed_data=feed_data)
+    feeds_to_request = json.dumps({"feed_ids": [feed.pair for feed in feeds]})
     try:
         while True:
-            logger.info("request for prices: %s", msg_to_send)
-            data = await connect_to_websocket(monitor_uri, msg_to_send, local)
+            data = await connect_to_websocket(monitor_uri, feeds_to_request, local)
             values = []
             if data.get("error"):
                 logger.error("error in websocket response: %s", data.get("error"))
                 time.sleep(POLLING_TIME)
                 continue
-            data = data.get("data", [])
-            for item in data:
-                values = item.get(FEED_ID, [])
-            logger.info("received: %s", values)
-            deviation = determine_deviation(values)
-            logger.info("deviation (%%) calculated as: %s", deviation)
-            if deviation >= 1.0:
+            price_pairs = data.get("data", [])
+            pairs_to_request = []
+            for price_pair in price_pairs:
+                pair = list(price_pair.keys())[0]
+                values = list(price_pair.values())[0]
+                deviation = determine_deviation(values)
+                if not deviation:
+                    continue
                 logger.info(
-                    "deviation: %s '%s' greater than 1%% requesting new price on-chain",
-                    values,
+                    "'%s' deviation calculated as: '%s' from %s",
+                    pair,
                     deviation,
+                    values,
                 )
-                await request_new_price(local)
-            logger.info("polling: %ss", POLLING_TIME)
+                feed_deviation = feed_helper.get_deviation(pair.upper(), feeds)
+                if feed_deviation == 0:
+                    continue
+                if deviation >= feed_deviation:
+                    pairs_to_request.append(pair)
+                    logger.info(
+                        "deviation: %s '%s' greater than %s%% requesting new price on-chain",
+                        values,
+                        deviation,
+                        feed_deviation,
+                    )
+            if not pairs_to_request:
+                logger.info(
+                    "not requesting any updated pairs... polling in '%s' seconds",
+                    POLLING_TIME,
+                )
+                time.sleep(POLLING_TIME)
+                continue
+            req = json.dumps({"feeds": pairs_to_request})
+            await request_new_prices(req, local)
             time.sleep(POLLING_TIME)
     except KeyboardInterrupt:
         print("", file=sys.stderr)
@@ -201,8 +235,14 @@ def main():
         action="store_true",
     )
 
+    parser.add_argument(
+        "--feeds",
+        help="feed data describing feeds being monitored (CER-feeds (JSON))",
+        required=True,
+    )
+
     args = parser.parse_args()
-    asyncio.run(price_monitor(args.local))
+    asyncio.run(price_monitor(feed_data=args.feeds, local=args.local))
 
 
 if __name__ == "__main__":

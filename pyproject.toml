@@ -1,51 +1,31 @@
 [project]
-# For more information on package metadata see:
-#
-#   * https://packaging.python.org/specifications/core-metadata/
-#
-# For even greater information on this file, see the pypa/sampleproject:
-#
-#   * https://github.com/pypa/sampleproject/blob/fc8d83efd5749853507be959d858629d0aaf5c6e/pyproject.toml
-#
 
-# Required.
 name = "price-monitor"
-version = "0.0.1"
 
-# Optional.
+dynamic = ["version", "dependencies"]
+
 description = "Enable monitoring of Orcfax price-feeds"
 
-# Optional.
 readme = "README.md"
 
-# Supported python versions. Optional, but helpful.
 requires-python = ">=3.9"
 
-# Optional.
 authors = [
   {name = "R. Spencer", email = "ross@oorcfax.io" },
 ]
 
-# Optional.
-#
-# Packages installed by pip when the project is installed.
-dependencies = [
-    "certifi==2023.7.22",
-    "tenacity==8.2.3",
-    "websockets==11.0.3",
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements/requirements.txt"]}
 
-]
-
-# Optional.
-#
 [project.urls]
 "Homepage" = "https://orcfax.io"
 "Source" = "https://github.com/orcfax/price-monitor"
 
-# Command-line executables to create.
 [project.scripts]
 price-monitor = "price_monitor.price_monitor:main"
 
 [build-system]
-requires = ["setuptools>=67.8.0", "wheel"]
+requires = ["setuptools>=67.8.0", "wheel", "setuptools_scm[toml]>=7.1.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
