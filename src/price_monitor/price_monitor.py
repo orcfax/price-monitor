@@ -31,12 +31,12 @@ import websockets
 from tenacity import retry, wait_exponential
 
 try:
-    import feeds_to_monitor
+    import feed_helper
 except ModuleNotFoundError:
     try:
-        from src.price_monitor import feeds_to_monitor
+        from src.price_monitor import feed_helper
     except ModuleNotFoundError:
-        from price_monitor import feeds_to_monitor
+        from price_monitor import feed_helper
 
 
 logging.basicConfig(
@@ -63,10 +63,9 @@ VALIDATION_REQUEST_URI: Final[str] = f"{VALIDATOR_URI}validate_on_demand/"
 POLLING_TIME: Final[str] = 60
 
 
-def price_request_msg() -> str:
+async def parse_feed_data(feed_data: str) -> str:
     """Return a price request message to send to the websocket."""
-    feeds = [feed.name for feed in feeds_to_monitor.feeds_to_monitor]
-    return json.dumps({"feed_ids": feeds})
+    return await feed_helper.read_feed_data(feed_data=feed_data)
 
 
 def get_user_agent() -> str:
@@ -154,7 +153,7 @@ async def request_new_prices(pairs_to_request: dict, local: bool):
     return
 
 
-async def price_monitor(local: bool = False):
+async def price_monitor(feed_data: str, local: bool = False):
     """Passively wait for the datum to broadcast and then publish via
     COOP.
 
@@ -170,10 +169,11 @@ async def price_monitor(local: bool = False):
     ```
     """
     monitor_uri = MONITOR_URI
-    feeds = price_request_msg()
+    feeds = await parse_feed_data(feed_data=feed_data)
+    feeds_to_request = json.dumps({"feed_ids": [feed.pair for feed in feeds]})
     try:
         while True:
-            data = await connect_to_websocket(monitor_uri, feeds, local)
+            data = await connect_to_websocket(monitor_uri, feeds_to_request, local)
             values = []
             if data.get("error"):
                 logger.error("error in websocket response: %s", data.get("error"))
@@ -193,7 +193,9 @@ async def price_monitor(local: bool = False):
                     deviation,
                     values,
                 )
-                feed_deviation = feeds_to_monitor.get_deviation(pair)
+                feed_deviation = feed_helper.get_deviation(pair.upper(), feeds)
+                if feed_deviation == 0:
+                    continue
                 if deviation >= feed_deviation:
                     pairs_to_request.append(pair)
                     logger.info(
@@ -233,8 +235,14 @@ def main():
         action="store_true",
     )
 
+    parser.add_argument(
+        "--feeds",
+        help="feed data describing feeds being monitored (CER-feeds (JSON))",
+        required=True,
+    )
+
     args = parser.parse_args()
-    asyncio.run(price_monitor(args.local))
+    asyncio.run(price_monitor(feed_data=args.feeds, local=args.local))
 
 
 if __name__ == "__main__":

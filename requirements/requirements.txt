@@ -1,4 +1,6 @@
 # requirements for the production project.
+
 certifi==2024.7.4
+pydantic==2.8.2
 tenacity==9.0.0
 websockets==12.0
