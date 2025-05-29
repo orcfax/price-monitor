@@ -182,6 +182,7 @@ async def price_monitor(feed_data: str, local: bool = False):
             price_pairs = data.get("data", [])
             pairs_to_request = []
             for price_pair in price_pairs:
+                logger.info("checking price pair: %s", price_pair)
                 pair = list(price_pair.keys())[0]
                 values = list(price_pair.values())[0]
                 deviation = determine_deviation(values)
@@ -196,14 +197,18 @@ async def price_monitor(feed_data: str, local: bool = False):
                 feed_deviation = feed_helper.get_deviation(pair.upper(), feeds)
                 if feed_deviation == 0:
                     continue
-                if deviation >= feed_deviation:
-                    pairs_to_request.append(pair)
-                    logger.info(
-                        "deviation: %s '%s' greater than %s%% requesting new price on-chain",
-                        values,
-                        deviation,
-                        feed_deviation,
-                    )
+                try:
+                    if deviation >= feed_deviation:
+                        pairs_to_request.append(pair)
+                        logger.info(
+                            "deviation: %s '%s' greater than %s%% requesting new price on-chain",
+                            values,
+                            deviation,
+                            feed_deviation,
+                        )
+                except TypeError:
+                    logger.warning("%s returned None during comparison", pair)
+                    continue
             if not pairs_to_request:
                 logger.info(
                     "not requesting any updated pairs... polling in '%s' seconds",
